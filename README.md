@@ -17,7 +17,7 @@ Stable Diffusion prompts, and it works with any ChatML-format GGUF chat model.
    ```
    Other builds: <https://github.com/abetlen/llama-cpp-python>. Pre-built CUDA wheels are listed at
    <https://abetlen.github.io/llama-cpp-python/whl/cu124/llama-cpp-python/>.
-3. Put one or more `.gguf` files in `ComfyUI/models/LLM/`, then restart ComfyUI.
+3. Put one or more `.gguf` files in `ComfyUI/models/llm-gguf/`, then restart ComfyUI.
 
 The node appears as **Local LLM Prompt** in the `llm` category.
 
@@ -25,19 +25,35 @@ The node appears as **Local LLM Prompt** in the `llm` category.
 
 | Input | Description |
 | --- | --- |
-| model | `.gguf` file from `models/LLM` |
+| model | `.gguf` file from `models/llm-gguf` |
 | prompt | text sent to the model |
 | system_prompt | defaults to the Promptmaster system prompt |
-| temperature, max_tokens, seed | sampling settings |
-| unload_after | free VRAM after each run so the diffusion model can use it (default on) |
-| n_ctx | context length (default 4096) |
-| gpu_layers | layers offloaded to GPU, `-1` = all |
+| temperature, seed | sampling settings |
+| max_tokens | Ollama `num_predict`; `-1` = unlimited |
+| unload_after | free VRAM after each run so the diffusion model can use it (default on, like `keep_alive: 0`) |
+| n_ctx | context length, Ollama `num_ctx` (default 4096) |
+| stop | extra stop strings, one per line |
+| output_format | `text` or `json` (Ollama `format: json`) |
+| top_k, top_p, min_p, typical_p, tfs_z | sampling filters |
+| mirostat, mirostat_tau, mirostat_eta | Mirostat sampling (`0` = off) |
+| repeat_penalty, repeat_last_n, presence_penalty, frequency_penalty | repetition control |
+| gpu_layers | layers offloaded to GPU (Ollama `num_gpu`), `-1` = all |
+| main_gpu, num_thread, num_batch, f16_kv, use_mmap, use_mlock, numa | hardware / memory options |
+| preload_to_ram | read the `.gguf` file once before loading so the OS file cache holds it in RAM and the load into VRAM is fast. Not pinned: Windows may evict it under memory pressure. Needs free RAM about the size of the model |
+
+Defaults follow Ollama's. The optional inputs are passed through to `llama-cpp-python`; any option
+the installed build does not support is silently ignored.
+
+Ollama options with no `llama-cpp-python` equivalent are not offered: `num_keep`,
+`penalize_newline` and `low_vram`.
 
 Output: `text` (STRING), e.g. wired into a CLIP Text Encode node.
 
 ## Notes
 
 - Tested with [Electrofried/Promptmaster-Mistral-7B-v1-GGUF](https://huggingface.co/Electrofried/Promptmaster-Mistral-7B-v1-GGUF) (Q8_0).
-- The chat format is fixed to ChatML. Models that use another template need a code change.
+- The chat template is always taken from the model (`tokenizer.chat_template` in the `.gguf`).
+  A model without an embedded template falls back to `llama-cpp-python`'s generic format (a warning
+  is printed to the console), which may give poor output. Most instruct/chat GGUFs have a template.
 - `llama-cpp-python` 0.2.68 does not support newer architectures (e.g. Gemma 3, Qwen3). Use a newer
   build for those.
