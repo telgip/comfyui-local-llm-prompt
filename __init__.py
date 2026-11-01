@@ -1,5 +1,6 @@
 import gc
 import inspect
+import json
 import os
 
 import torch  # noqa: F401  (puts torch's CUDA DLLs on the path for llama_cpp)
@@ -64,6 +65,34 @@ def _load(model, preload_to_ram=False, **ctor):
     return llm
 
 
+def _parse_history(raw):
+    """History is a JSON list of {"role": "user"|"assistant", "content": str}."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        history = json.loads(raw)
+        ok = isinstance(history, list) and all(
+            isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("content"), str) for m in history)
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError("history must be the JSON list produced by this node's history output")
+    return history
+
+
+def _trim_history(llm, history, fixed, budget):
+    """Drop the oldest turns until the history fits in `budget` tokens."""
+    def cost(msgs):  # +16 per message approximates the chat-template overhead
+        return sum(len(llm.tokenize(m["content"].encode("utf-8"), add_bos=False)) + 16 for m in msgs)
+
+    budget -= cost(fixed)
+    history = list(history)
+    while history and (cost(history) > budget or history[0]["role"] != "user"):
+        history.pop(0)
+    return history
+
+
 def _f(default, lo, hi, step=0.05):
     return ("FLOAT", {"default": default, "min": lo, "max": hi, "step": step})
 
@@ -90,6 +119,7 @@ class LocalLLMPrompt:
                 "n_ctx": _i(4096, 512, 32768, 512),
                 "stop": ("STRING", {"multiline": True, "default": ""}),  # one per line
                 "output_format": (["text", "json"],),
+                "history": ("STRING", {"forceInput": True}),
                 # sampling
                 "top_k": _i(40, 0, 1000),
                 "top_p": _f(0.9, 0.0, 1.0),
@@ -117,13 +147,13 @@ class LocalLLMPrompt:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("text",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("text", "history")
     FUNCTION = "run"
     CATEGORY = "llm"
 
     def run(self, model, prompt, system_prompt, temperature, max_tokens, seed, unload_after,
-            n_ctx=4096, stop="", output_format="text",
+            n_ctx=4096, stop="", output_format="text", history="",
             top_k=40, top_p=0.9, min_p=0.0, typical_p=1.0, tfs_z=1.0,
             mirostat=0, mirostat_tau=5.0, mirostat_eta=0.1,
             repeat_penalty=1.1, repeat_last_n=64, presence_penalty=0.0, frequency_penalty=0.0,
@@ -133,10 +163,11 @@ class LocalLLMPrompt:
                     n_threads=num_thread or None, n_batch=num_batch, f16_kv=f16_kv,
                     use_mmap=use_mmap, use_mlock=use_mlock, numa=numa,
                     last_n_tokens_size=repeat_last_n)
-        messages = []
-        if system_prompt.strip():
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        system = [{"role": "system", "content": system_prompt}] if system_prompt.strip() else []
+        user = {"role": "user", "content": prompt}
+        reserve = n_ctx // 4 if max_tokens < 0 else max_tokens
+        past = _trim_history(llm, _parse_history(history), system + [user], n_ctx - reserve)
+        messages = system + past + [user]
         stops = [x for x in stop.splitlines() if x]
         kwargs = dict(
             messages=messages, temperature=temperature, seed=seed, stop=stops or None,
@@ -154,7 +185,9 @@ class LocalLLMPrompt:
         finally:
             if unload_after:
                 _unload()  # frees VRAM for the diffusion model
-        return (text.strip(),)
+        text = text.strip()
+        new_history = past + [user, {"role": "assistant", "content": text}]
+        return (text, json.dumps(new_history, ensure_ascii=False))
 
     @classmethod
     def IS_CHANGED(cls, seed, **kwargs):

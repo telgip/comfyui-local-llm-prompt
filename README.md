@@ -33,6 +33,7 @@ The node appears as **Local LLM Prompt** in the `llm` category.
 | unload_after | free VRAM after each run so the diffusion model can use it (default on, like `keep_alive: 0`) |
 | n_ctx | context length, Ollama `num_ctx` (default 4096) |
 | stop | extra stop strings, one per line |
+| history | optional; the `history` output of a previous run, so the model remembers earlier turns (see below) |
 | output_format | `text` or `json` (Ollama `format: json`) |
 | top_k, top_p, min_p, typical_p, tfs_z | sampling filters |
 | mirostat, mirostat_tau, mirostat_eta | Mirostat sampling (`0` = off) |
@@ -47,7 +48,19 @@ the installed build does not support is silently ignored.
 Ollama options with no `llama-cpp-python` equivalent are not offered: `num_keep`,
 `penalize_newline` and `low_vram`.
 
-Output: `text` (STRING), e.g. wired into a CLIP Text Encode node.
+Outputs: `text` (STRING), e.g. wired into a CLIP Text Encode node, and `history` (STRING).
+
+## Keeping context (storytelling)
+
+`history` is the conversation so far as JSON. Wire the `history` output of one Local LLM Prompt node
+into the `history` input of the next, and give each node the next instruction as its `prompt`. Each
+node formats the earlier turns with the model's chat template, so they appear as real user and
+assistant messages. Leave `history` unconnected to start a fresh story.
+
+The history is stored in the workflow, not in the node, so it survives `unload_after` and restarts.
+When it no longer fits in `n_ctx` (minus room for `max_tokens`), the oldest turns are dropped
+automatically, so raise `n_ctx` for long stories. Each run re-processes the whole history, so runs
+get slower as the story grows.
 
 ## Notes
 
